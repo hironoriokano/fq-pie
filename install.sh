@@ -1,5 +1,5 @@
 #!/bin/bash +v
-PATCH_NAME=fq-pie.patch
+PATCH_NAME=patch-4.0.1
 ROOT_PATH=`pwd`
 
 ### install required packages ###
@@ -33,24 +33,20 @@ cp ../Makefile 		net/sched/Makefile
 
 git add -N include/net/pie.h
 git add -N net/sched/sch_fq_pie.c
-#git add -A
 git status
-#git diff
-echo "making patch"
+
+### make patch ###
 echo "git diff > ${ROOT_PATH}/${PATCH_NAME}"
 git diff > ${ROOT_PATH}/${PATCH_NAME}
 
-### assign patch ###
-
-#echo "assign patch to ${WORK_SPACE}"
-#${WORK_SPACE}/scripts/patch-kernel
+### test patch ###
+git reset --hard HEAD
+./scripts/patch-kernel ${ROOT_PATH}/linux-next ${ROOT_PATH}
 
 ### build kernel###
 echo "build kernel.."
-
 cp ../config	.config
 #cp /boot/config-`uname -r`	${ROOT_PATH}/.config
-
 
 make localmodconfig #enable modules in use
 make menuconfig
