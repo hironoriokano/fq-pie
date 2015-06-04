@@ -35,7 +35,6 @@
 #include <linux/vmalloc.h>
 #include <net/netlink.h>
 #include <net/pkt_sched.h>
-#include <net/flow_keys.h>
 #include <net/inet_ecn.h>
 #include <net/pie.h>
 
@@ -84,13 +83,7 @@ struct fq_pie_sched_data {
 static unsigned int fq_pie_hash(const struct fq_pie_sched_data *q,
 				  const struct sk_buff *skb)
 {
-	struct flow_keys keys;
-	unsigned int hash;
-
-	skb_flow_dissect(skb, &keys);
-	hash = jhash_3words((__force u32)keys.dst,
-			    (__force u32)keys.src ^ keys.ip_proto,
-			    (__force u32)keys.ports, q->perturbation);
+	u32 hash = skb_get_hash_perturb(skb, q->perturbation);
 
 	return reciprocal_scale(hash, q->flows_cnt);
 }

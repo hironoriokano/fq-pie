@@ -1,5 +1,5 @@
 #!/bin/bash +v
-PATCH_NAME=patch-4.0.1
+PATCH_NAME=patch-4.1.1
 ROOT_PATH=`pwd`
 
 ### install required packages ###
@@ -63,6 +63,6 @@ if [ -L /usr/src/linux ]; then
 	echo "remove current symbolic link.."
 	rm /usr/src/linux
 fi
-ln -s . /usr/src/linux
+ln -s ${ROOT_PATH}/linux-next /usr/src/linux
 #Though you see some ERRORS, but it was installed successfully.
 # reboot
