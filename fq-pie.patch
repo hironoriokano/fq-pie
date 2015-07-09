@@ -284,10 +284,10 @@ index e69de29..114dea6 100644
 +
 +#endif
 diff --git a/include/uapi/linux/pkt_sched.h b/include/uapi/linux/pkt_sched.h
-index 534b847..c157329 100644
+index 8d2530d..ae40147 100644
 --- a/include/uapi/linux/pkt_sched.h
 +++ b/include/uapi/linux/pkt_sched.h
-@@ -845,4 +845,60 @@ struct tc_pie_xstats {
+@@ -850,4 +850,60 @@ struct tc_pie_xstats {
  	__u32 maxq;             /* maximum queue size */
  	__u32 ecn_mark;         /* packets marked with ecn*/
  };
@@ -349,7 +349,7 @@ index 534b847..c157329 100644
 +};
  #endif
 diff --git a/net/sched/Kconfig b/net/sched/Kconfig
-index 2274e72..e75be1e 100644
+index daa3343..46ed344 100644
 --- a/net/sched/Kconfig
 +++ b/net/sched/Kconfig
 @@ -309,6 +309,17 @@ config NET_SCH_PIE
@@ -371,7 +371,7 @@ index 2274e72..e75be1e 100644
  	tristate "Ingress Qdisc"
  	depends on NET_CLS_ACT
 diff --git a/net/sched/Makefile b/net/sched/Makefile
-index 7ca7f4c..a0efd90 100644
+index 690c1689..21574f9 100644
 --- a/net/sched/Makefile
 +++ b/net/sched/Makefile
 @@ -45,6 +45,7 @@ obj-$(CONFIG_NET_SCH_FQ_CODEL)	+= sch_fq_codel.o
@@ -383,10 +383,10 @@ index 7ca7f4c..a0efd90 100644
  obj-$(CONFIG_NET_CLS_U32)	+= cls_u32.o
  obj-$(CONFIG_NET_CLS_ROUTE4)	+= cls_route.o
 diff --git a/net/sched/sch_fq_pie.c b/net/sched/sch_fq_pie.c
-index e69de29..f50532b 100644
+index e69de29..b68735e 100644
 --- a/net/sched/sch_fq_pie.c
 +++ b/net/sched/sch_fq_pie.c
-@@ -0,0 +1,624 @@
+@@ -0,0 +1,617 @@
 +/* Copyright (C) 2015 Cisco Systems, Inc, 2015.
 + *
 + * This program is free software; you can redistribute it and/or
@@ -424,7 +424,6 @@ index e69de29..f50532b 100644
 +#include <linux/vmalloc.h>
 +#include <net/netlink.h>
 +#include <net/pkt_sched.h>
-+#include <net/flow_keys.h>
 +#include <net/inet_ecn.h>
 +#include <net/pie.h>
 +
@@ -473,13 +472,7 @@ index e69de29..f50532b 100644
 +static unsigned int fq_pie_hash(const struct fq_pie_sched_data *q,
 +				  const struct sk_buff *skb)
 +{
-+	struct flow_keys keys;
-+	unsigned int hash;
-+
-+	skb_flow_dissect(skb, &keys);
-+	hash = jhash_3words((__force u32)keys.dst,
-+			    (__force u32)keys.src ^ keys.ip_proto,
-+			    (__force u32)keys.ports, q->perturbation);
++	u32 hash = skb_get_hash_perturb(skb, q->perturbation);
 +
 +	return reciprocal_scale(hash, q->flows_cnt);
 +}

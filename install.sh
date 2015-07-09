@@ -1,5 +1,10 @@
 #!/bin/bash +v
-PATCH_NAME=patch-4.1.1
+TEMP=`head -3 linux-next/Makefile`
+VERSION=`echo $TEMP | awk '{print $3}'`
+PATCHLEVEL=`echo $TEMP | awk '{print $6}'`
+SUBLEVEL=`echo $TEMP | awk '{print $9}'`
+SUBLEVEL=`expr $SUBLEVEL + 1`
+PATCH_NAME=patch-${VERSION}.${PATCHLEVEL}.${SUBLEVEL}
 ROOT_PATH=`pwd`
 
 ### install required packages ###
@@ -56,9 +61,22 @@ make menuconfig
 #	(M)FQ_CODEL
 #	(M)PIE
 #	(M)FQ_PIE
+
+set -e
+trap 'echo "make failed"' ERR
 make -j 8
+
+set -e
+trap 'echo "make modules_install failed"' ERR
 make modules_install
+
+set -e
+trap 'echo "make install failed"' ERR
 make install 
+
+cd $ROOT_PATH
+mv $PATCH_NAME fq-pie.patch
+
 if [ -L /usr/src/linux ]; then
 	echo "remove current symbolic link.."
 	rm /usr/src/linux
