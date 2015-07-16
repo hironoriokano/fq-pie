@@ -43,6 +43,7 @@ struct pie_sched_data {
 static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 {
 	struct pie_sched_data *q = qdisc_priv(sch);
+	u32 mtu = psched_mtu(qdisc_dev(sch));
 	bool enqueue = false;
 
 	if (unlikely(qdisc_qlen(sch) >= sch->limit)) {
@@ -50,7 +51,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		goto out;
 	}
 
-	if (!drop_early(sch, &q->params, &q->vars, skb->len)) { 
+	if (!drop_early(&q->params, &q->vars, skb->len, mtu)) { 
 		enqueue = true;
 	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
 		   INET_ECN_set_ce(skb)) {
@@ -64,6 +65,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	/* we can enqueue the packet */
 	if (enqueue) {
 		q->stats.packets_in++;
+		q->vars.qlen += qdisc_pkt_len(skb);
 		if (qdisc_qlen(sch) > q->stats.maxq)
 			q->stats.maxq = qdisc_qlen(sch);
 
@@ -137,6 +139,7 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt)
 	qlen = sch->q.qlen;
 	while (sch->q.qlen > sch->limit) {
 		struct sk_buff *skb = __skb_dequeue(&sch->q);
+		q->vars.qlen -= qdisc_pkt_len(skb);
 
 		qdisc_qstats_backlog_dec(sch, skb);
 		qdisc_drop(skb, sch);
@@ -154,7 +157,7 @@ static void pie_timer(unsigned long arg)
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 
 	spin_lock(root_lock);
-	calculate_probability(sch, &q->params, &q->vars);
+	calculate_probability(&q->params, &q->vars);
 
 	/* reset the timer to fire after 'tupdate'. tupdate is in jiffies. */
 	if (q->params.tupdate)
@@ -242,7 +245,8 @@ static struct sk_buff *pie_qdisc_dequeue(struct Qdisc *sch)
 	if (!skb)
 		return NULL;
 
-	pie_process_dequeue(sch, &q->vars, skb);
+	q->vars.qlen -= qdisc_pkt_len(skb); //Hironori
+	pie_process_dequeue(&q->vars, skb->len);
 	return skb;
 }
 

@@ -13,24 +13,24 @@
 /* parameters used */
 struct pie_params {
 	psched_time_t target;	/* user specified target delay in pschedtime */
-	u32 tupdate;		/* timer frequency (in jiffies) */
-	u32 limit;		/* number of packets that can be enqueued */
-	u32 alpha;		/* alpha and beta are between 0 and 32 */
-	u32 beta;		/* and are used for shift relative to 1 */
-	bool ecn;		/* true if ecn is enabled */
-	bool bytemode;		/* to scale drop early prob based on pkt size */
+	u32 tupdate;		    /* timer frequency (in jiffies) */
+	u32 limit;		        /* number of packets that can be enqueued */
+	u32 alpha;		        /* alpha and beta are between 0 and 32 */
+	u32 beta;		        /* and are used for shift relative to 1 */
+	bool ecn;		        /* true if ecn is enabled */
+	bool bytemode;		    /* to scale drop early prob based on pkt size */
 };
 
 /* variables used */
 struct pie_vars {
-	u32 prob;		/* probability but scaled by u32 limit. */
+	u32 prob;		            /* probability but scaled by u32 limit. */
 	psched_time_t burst_time;
 	psched_time_t qdelay;
 	psched_time_t qdelay_old;
-	u64 dq_count;		/* measured in bytes */
+	u64 dq_count;		        /* measured in bytes */
 	psched_time_t dq_tstamp;	/* drain rate */
-	u32 avg_dq_rate;	/* bytes per pschedtime tick,scaled */
-	u32 qlen_old;		/* in bytes */
+	u32 avg_dq_rate;	        /* bytes per pschedtime tick,scaled */
+	u32 qlen;		            /* in bytes */
 };
 
 /* statistics gathering */
@@ -38,7 +38,7 @@ struct pie_stats {
 	u32 packets_in;		/* total number of packets enqueued */
 	u32 dropped;		/* packets dropped due to pie_action */
 	u32 overlimit;		/* dropped due to lack of space in queue */
-	u32 maxq;		/* maximum queue size */
+	u32 maxq;		    /* maximum queue size */
 	u32 ecn_mark;		/* packets marked with ECN */
 };
 
@@ -48,7 +48,7 @@ static void pie_params_init(struct pie_params *params)
 	params->alpha = 2;
 	params->beta = 20;
 	params->tupdate = usecs_to_jiffies(30 * USEC_PER_MSEC);	/* 30 ms */
-	params->limit = 1000;	/* default of 1000 packets */
+	params->limit = 1000;   /* default of 1000 packets */
 	params->target = PSCHED_NS2TICKS(20 * NSEC_PER_MSEC);	/* 20 ms */
 	params->ecn = false;
 	params->bytemode = false;
@@ -60,14 +60,13 @@ static void pie_vars_init(struct pie_vars *vars)
 	vars->avg_dq_rate = 0;
 	/* default of 100 ms in pschedtime */
 	vars->burst_time = PSCHED_NS2TICKS(100 * NSEC_PER_MSEC);
-	vars->qlen_old = 0;
+	vars->qlen = 0;
 }
 
-static bool drop_early(struct Qdisc *sch, struct pie_params *params, struct pie_vars *vars, u32 packet_size)
+static bool drop_early(struct pie_params *params, struct pie_vars *vars, u32 packet_size, u32 mtu)
 {
 	u32 rnd;
 	u32 local_prob = vars->prob;
-	u32 mtu = psched_mtu(qdisc_dev(sch));
 
 	/* If there is still burst allowance left skip random early drop */
 	if (vars->burst_time > 0)
@@ -83,7 +82,7 @@ static bool drop_early(struct Qdisc *sch, struct pie_params *params, struct pie_
 	/* If we have fewer than 2 mtu-sized packets, disable drop_early,
 	 * similar to min_th in RED
 	 */
-	if (sch->qstats.backlog < 2 * mtu)
+	if (vars->qlen < 2 * mtu)
 		return false;
 
 	/* If bytemode is turned on, use packet size to compute new
@@ -101,15 +100,13 @@ static bool drop_early(struct Qdisc *sch, struct pie_params *params, struct pie_
 	return false;
 }
 
-static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct sk_buff *skb)
+static void pie_process_dequeue(struct pie_vars *vars, u32 packet_size)
 {
-	int qlen = sch->qstats.backlog;	/* current queue size in bytes */
-
 	/* If current queue is about 10 packets or more and dq_count is unset
 	 * we have enough packets to calculate the drain rate. Save
 	 * current time as dq_tstamp and start measurement cycle.
 	 */
-	if (qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
+	if (vars->qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
 		vars->dq_tstamp = psched_get_time();
 		vars->dq_count = 0;
 	}
@@ -124,7 +121,7 @@ static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct
 	 * bytes/psched_time.
 	 */
 	if (vars->dq_count != DQCOUNT_INVALID) {
-		vars->dq_count += skb->len;
+		vars->dq_count += packet_size;
 
 		if (vars->dq_count >= QUEUE_THRESHOLD) {
 			psched_time_t now = psched_get_time();
@@ -148,7 +145,7 @@ static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct
 			 * dq_count to 0 to re-enter the if block when the next
 			 * packet is dequeued
 			 */
-			if (qlen < QUEUE_THRESHOLD)
+			if (vars->qlen < QUEUE_THRESHOLD)
 				vars->dq_count = DQCOUNT_INVALID;
 			else {
 				vars->dq_count = 0;
@@ -165,9 +162,9 @@ static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct
 	}
 }
 
-static void calculate_probability(struct Qdisc *sch, struct pie_params *params, struct pie_vars *vars)
+static void calculate_probability(struct pie_params *params, struct pie_vars *vars)
 {
-	u32 qlen = sch->qstats.backlog;	/* queue size in bytes */
+	u32 qlen = vars->qlen;	/* queue size in bytes */
 	psched_time_t qdelay = 0;	/* in pschedtime */
 	psched_time_t qdelay_old = vars->qdelay;	/* in pschedtime */
 	s32 delta = 0;		/* determines the change in probability */
@@ -262,7 +259,6 @@ static void calculate_probability(struct Qdisc *sch, struct pie_params *params, 
 		vars->prob = (vars->prob * 98) / 100;
 
 	vars->qdelay = qdelay;
-	vars->qlen_old = qlen;
 
 	/* We restart the measurement cycle if the following conditions are met
 	 * 1. If the delay has been low for 2 consecutive Tupdate periods
@@ -276,5 +272,4 @@ static void calculate_probability(struct Qdisc *sch, struct pie_params *params, 
 	    (vars->avg_dq_rate > 0))
 		pie_vars_init(vars);
 }
-
 #endif

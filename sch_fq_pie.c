@@ -60,6 +60,7 @@ struct fq_pie_flow {
 	struct list_head  flowchain;
 	int		  deficit;
 	u32		  dropped; /* number of drops (or ECN marks) on this flow */
+	struct pie_vars vars;
 }; /* please try to keep this structure <= 64 bytes */
 
 struct fq_pie_sched_data {
@@ -69,7 +70,6 @@ struct fq_pie_sched_data {
 	u32		flows_cnt;	/* number of flows */
 	u32		perturbation;	/* hash perturbation */
 	u32		quantum;	/* psched_mtu(qdisc_dev(sch)); */
-	struct pie_vars vars;
 	struct pie_params params;
 	struct pie_stats stats;
 	struct timer_list adapt_timer;
@@ -138,12 +138,10 @@ static inline void flow_queue_add(struct fq_pie_flow *flow,
 static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 {
 	struct fq_pie_sched_data *q = qdisc_priv(sch);
+	u32 mtu = psched_mtu(qdisc_dev(sch));
 	unsigned int idx;
 	struct fq_pie_flow *flow;
 	int uninitialized_var(ret);
-	u32 max_queue_length=0;
-	u32 tmp_prob = 0;
-	int i;
 	bool enqueue = false;
 
 	idx = fq_pie_classify(skb, sch, &ret);
@@ -163,17 +161,9 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	}
 	sch->q.qlen++;
 
-	/* PIE: drop early */
-	tmp_prob = q->vars.prob;
-	for (i = 0; i < q->flows_cnt; i++) {
-		if ( q->backlogs[i] >= max_queue_length ) max_queue_length = q->backlogs[i];
-	}
-	if ( max_queue_length > 0 ) {
-		q->vars.prob = q->vars.prob / max_queue_length * q->backlogs[idx];
-	}
-	if (!drop_early(sch, &q->params, &q->vars, skb->len)) {
+	if (!drop_early(&q->params, &flow->vars, skb->len, mtu)) {
 		enqueue = true;
-	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
+	} else if (q->params.ecn && (flow->vars.prob <= MAX_PROB / 10) &&
 		   INET_ECN_set_ce(skb)) {
 		/* If packet is ecn capable, mark it if drop probability
 		 * is lower than 10%, else drop it.
@@ -181,7 +171,6 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		q->stats.ecn_mark++;
 		enqueue = true;
 	}
-	q->vars.prob = tmp_prob;
 
 	/* we can enqueue the packet */
 	if (enqueue) {
@@ -194,6 +183,7 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	}
 
 	flow_queue_add(flow, skb);
+	flow->vars.qlen += qdisc_pkt_len(skb);
 	q->backlogs[idx] += qdisc_pkt_len(skb);
 	qdisc_qstats_backlog_inc(sch, skb);
 
@@ -255,7 +245,8 @@ begin:
 	qdisc_bstats_update(sch, skb);
 	flow->deficit -= qdisc_pkt_len(skb);
 
-	pie_process_dequeue(sch, &q->vars, skb);
+	flow->vars.qlen -= qdisc_pkt_len(skb);
+	pie_process_dequeue(&flow->vars, skb->len);
 
 	return skb;
 }
@@ -264,11 +255,16 @@ static void fq_pie_timer(unsigned long arg)
 {
 	struct Qdisc *sch = (struct Qdisc *)arg;
 	struct fq_pie_sched_data *q = qdisc_priv(sch);
+	struct fq_pie_flow *flow;
+	int i;
 	
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 
 	spin_lock(root_lock);
-	calculate_probability(sch, &q->params, &q->vars);
+	for (i = 0; i < q->flows_cnt; i++) {
+		flow = q->flows + i;
+		calculate_probability(&q->params, &flow->vars);
+	}
 	if (q->params.tupdate)
 		mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
 	spin_unlock(root_lock);
@@ -393,8 +389,7 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt)
 	q->perturbation = prandom_u32();
 	INIT_LIST_HEAD(&q->new_flows);
 	INIT_LIST_HEAD(&q->old_flows);
-	pie_vars_init(&q->vars);
-	pie_params_init(&q->params);
+    pie_params_init(&q->params);
 	setup_timer(&q->adapt_timer,fq_pie_timer, (unsigned long)sch);
 	mod_timer(&q->adapt_timer, jiffies + HZ / 2);
 	q->params.ecn = true;
@@ -417,7 +412,7 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt)
 		}
 		for (i = 0; i < q->flows_cnt; i++) {
 			struct fq_pie_flow *flow = q->flows + i;
-
+            pie_vars_init(&flow->vars);
 			INIT_LIST_HEAD(&flow->flowchain);
 		}
 	}
@@ -484,13 +479,6 @@ static int fq_pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 
 	list_for_each(pos, &q->old_flows)
 		st.qdisc_stats.old_flows_len++;
-
-	st.qdisc_stats.prob = q->vars.prob;
-	st.qdisc_stats.delay = ((u32) PSCHED_TICKS2NS(q->vars.qdelay)) /
-				   NSEC_PER_USEC;
-	st.qdisc_stats.avg_dq_rate = q->vars.avg_dq_rate *
-				   (PSCHED_TICKS_PER_SEC) >> PIE_SCALE;
-
 	return gnet_stats_copy_app(d, &st, sizeof(st));
 }
 
@@ -549,6 +537,11 @@ static int fq_pie_dump_class_stats(struct Qdisc *sch, unsigned long cl,
 		xstats.type = TCA_FQ_PIE_XSTATS_CLASS;
 
 		xstats.class_stats.deficit = flow->deficit;
+		xstats.class_stats.prob = flow->vars.prob;
+		xstats.class_stats.delay = ((u32) PSCHED_TICKS2NS(flow->vars.qdelay)) /
+			       NSEC_PER_USEC;
+		xstats.class_stats.avg_dq_rate = flow->vars.avg_dq_rate *
+			       (PSCHED_TICKS_PER_SEC) >> PIE_SCALE;
 		while (skb) {
 			qs.qlen++;
 			skb = skb->next;

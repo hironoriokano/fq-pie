@@ -889,14 +889,13 @@ struct tc_fq_pie_qd_stats {
 				 */
 	__u32 new_flows_len;	/* count of flows in new list */
 	__u32 old_flows_len;	/* count of flows in old list */
-
-	__u32 prob;             /* current probability */
-	__u32 delay;            /* current delay in ms */
-	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
 };
 
 struct tc_fq_pie_cl_stats {
 	__s32 deficit;
+	__u32 prob;             /* current probability */
+	__u32 delay;            /* current delay in ms */
+	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
 };
 
 struct tc_fq_pie_xstats {

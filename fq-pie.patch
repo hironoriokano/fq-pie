@@ -1,8 +1,8 @@
 diff --git a/include/net/pie.h b/include/net/pie.h
-index e69de29..114dea6 100644
+index e69de29..a5ea4e2 100644
 --- a/include/net/pie.h
 +++ b/include/net/pie.h
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,275 @@
 +#ifndef __NET_SCHED_PIE_H
 +#define __NET_SCHED_PIE_H
 +
@@ -18,24 +18,24 @@ index e69de29..114dea6 100644
 +/* parameters used */
 +struct pie_params {
 +	psched_time_t target;	/* user specified target delay in pschedtime */
-+	u32 tupdate;		/* timer frequency (in jiffies) */
-+	u32 limit;		/* number of packets that can be enqueued */
-+	u32 alpha;		/* alpha and beta are between 0 and 32 */
-+	u32 beta;		/* and are used for shift relative to 1 */
-+	bool ecn;		/* true if ecn is enabled */
-+	bool bytemode;		/* to scale drop early prob based on pkt size */
++	u32 tupdate;		    /* timer frequency (in jiffies) */
++	u32 limit;		        /* number of packets that can be enqueued */
++	u32 alpha;		        /* alpha and beta are between 0 and 32 */
++	u32 beta;		        /* and are used for shift relative to 1 */
++	bool ecn;		        /* true if ecn is enabled */
++	bool bytemode;		    /* to scale drop early prob based on pkt size */
 +};
 +
 +/* variables used */
 +struct pie_vars {
-+	u32 prob;		/* probability but scaled by u32 limit. */
++	u32 prob;		            /* probability but scaled by u32 limit. */
 +	psched_time_t burst_time;
 +	psched_time_t qdelay;
 +	psched_time_t qdelay_old;
-+	u64 dq_count;		/* measured in bytes */
++	u64 dq_count;		        /* measured in bytes */
 +	psched_time_t dq_tstamp;	/* drain rate */
-+	u32 avg_dq_rate;	/* bytes per pschedtime tick,scaled */
-+	u32 qlen_old;		/* in bytes */
++	u32 avg_dq_rate;	        /* bytes per pschedtime tick,scaled */
++	u32 qlen;		            /* in bytes */
 +};
 +
 +/* statistics gathering */
@@ -43,7 +43,7 @@ index e69de29..114dea6 100644
 +	u32 packets_in;		/* total number of packets enqueued */
 +	u32 dropped;		/* packets dropped due to pie_action */
 +	u32 overlimit;		/* dropped due to lack of space in queue */
-+	u32 maxq;		/* maximum queue size */
++	u32 maxq;		    /* maximum queue size */
 +	u32 ecn_mark;		/* packets marked with ECN */
 +};
 +
@@ -53,7 +53,7 @@ index e69de29..114dea6 100644
 +	params->alpha = 2;
 +	params->beta = 20;
 +	params->tupdate = usecs_to_jiffies(30 * USEC_PER_MSEC);	/* 30 ms */
-+	params->limit = 1000;	/* default of 1000 packets */
++	params->limit = 1000;   /* default of 1000 packets */
 +	params->target = PSCHED_NS2TICKS(20 * NSEC_PER_MSEC);	/* 20 ms */
 +	params->ecn = false;
 +	params->bytemode = false;
@@ -65,14 +65,13 @@ index e69de29..114dea6 100644
 +	vars->avg_dq_rate = 0;
 +	/* default of 100 ms in pschedtime */
 +	vars->burst_time = PSCHED_NS2TICKS(100 * NSEC_PER_MSEC);
-+	vars->qlen_old = 0;
++	vars->qlen = 0;
 +}
 +
-+static bool drop_early(struct Qdisc *sch, struct pie_params *params, struct pie_vars *vars, u32 packet_size)
++static bool drop_early(struct pie_params *params, struct pie_vars *vars, u32 packet_size, u32 mtu)
 +{
 +	u32 rnd;
 +	u32 local_prob = vars->prob;
-+	u32 mtu = psched_mtu(qdisc_dev(sch));
 +
 +	/* If there is still burst allowance left skip random early drop */
 +	if (vars->burst_time > 0)
@@ -88,7 +87,7 @@ index e69de29..114dea6 100644
 +	/* If we have fewer than 2 mtu-sized packets, disable drop_early,
 +	 * similar to min_th in RED
 +	 */
-+	if (sch->qstats.backlog < 2 * mtu)
++	if (vars->qlen < 2 * mtu)
 +		return false;
 +
 +	/* If bytemode is turned on, use packet size to compute new
@@ -106,15 +105,13 @@ index e69de29..114dea6 100644
 +	return false;
 +}
 +
-+static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct sk_buff *skb)
++static void pie_process_dequeue(struct pie_vars *vars, u32 packet_size)
 +{
-+	int qlen = sch->qstats.backlog;	/* current queue size in bytes */
-+
 +	/* If current queue is about 10 packets or more and dq_count is unset
 +	 * we have enough packets to calculate the drain rate. Save
 +	 * current time as dq_tstamp and start measurement cycle.
 +	 */
-+	if (qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
++	if (vars->qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
 +		vars->dq_tstamp = psched_get_time();
 +		vars->dq_count = 0;
 +	}
@@ -129,7 +126,7 @@ index e69de29..114dea6 100644
 +	 * bytes/psched_time.
 +	 */
 +	if (vars->dq_count != DQCOUNT_INVALID) {
-+		vars->dq_count += skb->len;
++		vars->dq_count += packet_size;
 +
 +		if (vars->dq_count >= QUEUE_THRESHOLD) {
 +			psched_time_t now = psched_get_time();
@@ -153,7 +150,7 @@ index e69de29..114dea6 100644
 +			 * dq_count to 0 to re-enter the if block when the next
 +			 * packet is dequeued
 +			 */
-+			if (qlen < QUEUE_THRESHOLD)
++			if (vars->qlen < QUEUE_THRESHOLD)
 +				vars->dq_count = DQCOUNT_INVALID;
 +			else {
 +				vars->dq_count = 0;
@@ -170,9 +167,9 @@ index e69de29..114dea6 100644
 +	}
 +}
 +
-+static void calculate_probability(struct Qdisc *sch, struct pie_params *params, struct pie_vars *vars)
++static void calculate_probability(struct pie_params *params, struct pie_vars *vars)
 +{
-+	u32 qlen = sch->qstats.backlog;	/* queue size in bytes */
++	u32 qlen = vars->qlen;	/* queue size in bytes */
 +	psched_time_t qdelay = 0;	/* in pschedtime */
 +	psched_time_t qdelay_old = vars->qdelay;	/* in pschedtime */
 +	s32 delta = 0;		/* determines the change in probability */
@@ -267,7 +264,6 @@ index e69de29..114dea6 100644
 +		vars->prob = (vars->prob * 98) / 100;
 +
 +	vars->qdelay = qdelay;
-+	vars->qlen_old = qlen;
 +
 +	/* We restart the measurement cycle if the following conditions are met
 +	 * 1. If the delay has been low for 2 consecutive Tupdate periods
@@ -281,13 +277,12 @@ index e69de29..114dea6 100644
 +	    (vars->avg_dq_rate > 0))
 +		pie_vars_init(vars);
 +}
-+
 +#endif
 diff --git a/include/uapi/linux/pkt_sched.h b/include/uapi/linux/pkt_sched.h
-index 8d2530d..ae40147 100644
+index 8d2530d..d9a4b84 100644
 --- a/include/uapi/linux/pkt_sched.h
 +++ b/include/uapi/linux/pkt_sched.h
-@@ -850,4 +850,60 @@ struct tc_pie_xstats {
+@@ -850,4 +850,59 @@ struct tc_pie_xstats {
  	__u32 maxq;             /* maximum queue size */
  	__u32 ecn_mark;         /* packets marked with ecn*/
  };
@@ -330,14 +325,13 @@ index 8d2530d..ae40147 100644
 +				 */
 +	__u32 new_flows_len;	/* count of flows in new list */
 +	__u32 old_flows_len;	/* count of flows in old list */
-+
-+	__u32 prob;             /* current probability */
-+	__u32 delay;            /* current delay in ms */
-+	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
 +};
 +
 +struct tc_fq_pie_cl_stats {
 +	__s32 deficit;
++	__u32 prob;             /* current probability */
++	__u32 delay;            /* current delay in ms */
++	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
 +};
 +
 +struct tc_fq_pie_xstats {
@@ -383,10 +377,10 @@ index 690c1689..21574f9 100644
  obj-$(CONFIG_NET_CLS_U32)	+= cls_u32.o
  obj-$(CONFIG_NET_CLS_ROUTE4)	+= cls_route.o
 diff --git a/net/sched/sch_fq_pie.c b/net/sched/sch_fq_pie.c
-index e69de29..8b2e9fa 100644
+index e69de29..d65e8ad 100644
 --- a/net/sched/sch_fq_pie.c
 +++ b/net/sched/sch_fq_pie.c
-@@ -0,0 +1,629 @@
+@@ -0,0 +1,622 @@
 +/* Copyright (C) 2015 Cisco Systems, Inc, 2015.
 + *
 + * This program is free software; you can redistribute it and/or
@@ -449,6 +443,7 @@ index e69de29..8b2e9fa 100644
 +	struct list_head  flowchain;
 +	int		  deficit;
 +	u32		  dropped; /* number of drops (or ECN marks) on this flow */
++	struct pie_vars vars;
 +}; /* please try to keep this structure <= 64 bytes */
 +
 +struct fq_pie_sched_data {
@@ -458,7 +453,6 @@ index e69de29..8b2e9fa 100644
 +	u32		flows_cnt;	/* number of flows */
 +	u32		perturbation;	/* hash perturbation */
 +	u32		quantum;	/* psched_mtu(qdisc_dev(sch)); */
-+	struct pie_vars vars;
 +	struct pie_params params;
 +	struct pie_stats stats;
 +	struct timer_list adapt_timer;
@@ -527,12 +521,10 @@ index e69de29..8b2e9fa 100644
 +static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 +{
 +	struct fq_pie_sched_data *q = qdisc_priv(sch);
++	u32 mtu = psched_mtu(qdisc_dev(sch));
 +	unsigned int idx;
 +	struct fq_pie_flow *flow;
 +	int uninitialized_var(ret);
-+	u32 max_queue_length=0;
-+	u32 tmp_prob = 0;
-+	int i;
 +	bool enqueue = false;
 +
 +	idx = fq_pie_classify(skb, sch, &ret);
@@ -552,17 +544,9 @@ index e69de29..8b2e9fa 100644
 +	}
 +	sch->q.qlen++;
 +
-+	/* PIE: drop early */
-+	tmp_prob = q->vars.prob;
-+	for (i = 0; i < q->flows_cnt; i++) {
-+		if ( q->backlogs[i] >= max_queue_length ) max_queue_length = q->backlogs[i];
-+	}
-+	if ( max_queue_length > 0 ) {
-+		q->vars.prob = q->vars.prob / max_queue_length * q->backlogs[idx];
-+	}
-+	if (!drop_early(sch, &q->params, &q->vars, skb->len)) {
++	if (!drop_early(&q->params, &flow->vars, skb->len, mtu)) {
 +		enqueue = true;
-+	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
++	} else if (q->params.ecn && (flow->vars.prob <= MAX_PROB / 10) &&
 +		   INET_ECN_set_ce(skb)) {
 +		/* If packet is ecn capable, mark it if drop probability
 +		 * is lower than 10%, else drop it.
@@ -570,7 +554,6 @@ index e69de29..8b2e9fa 100644
 +		q->stats.ecn_mark++;
 +		enqueue = true;
 +	}
-+	q->vars.prob = tmp_prob;
 +
 +	/* we can enqueue the packet */
 +	if (enqueue) {
@@ -583,6 +566,7 @@ index e69de29..8b2e9fa 100644
 +	}
 +
 +	flow_queue_add(flow, skb);
++	flow->vars.qlen += qdisc_pkt_len(skb);
 +	q->backlogs[idx] += qdisc_pkt_len(skb);
 +	qdisc_qstats_backlog_inc(sch, skb);
 +
@@ -644,7 +628,8 @@ index e69de29..8b2e9fa 100644
 +	qdisc_bstats_update(sch, skb);
 +	flow->deficit -= qdisc_pkt_len(skb);
 +
-+	pie_process_dequeue(sch, &q->vars, skb);
++	flow->vars.qlen -= qdisc_pkt_len(skb);
++	pie_process_dequeue(&flow->vars, skb->len);
 +
 +	return skb;
 +}
@@ -653,11 +638,16 @@ index e69de29..8b2e9fa 100644
 +{
 +	struct Qdisc *sch = (struct Qdisc *)arg;
 +	struct fq_pie_sched_data *q = qdisc_priv(sch);
++	struct fq_pie_flow *flow;
++	int i;
 +	
 +	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
 +
 +	spin_lock(root_lock);
-+	calculate_probability(sch, &q->params, &q->vars);
++	for (i = 0; i < q->flows_cnt; i++) {
++		flow = q->flows + i;
++		calculate_probability(&q->params, &flow->vars);
++	}
 +	if (q->params.tupdate)
 +		mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
 +	spin_unlock(root_lock);
@@ -782,8 +772,7 @@ index e69de29..8b2e9fa 100644
 +	q->perturbation = prandom_u32();
 +	INIT_LIST_HEAD(&q->new_flows);
 +	INIT_LIST_HEAD(&q->old_flows);
-+	pie_vars_init(&q->vars);
-+	pie_params_init(&q->params);
++    pie_params_init(&q->params);
 +	setup_timer(&q->adapt_timer,fq_pie_timer, (unsigned long)sch);
 +	mod_timer(&q->adapt_timer, jiffies + HZ / 2);
 +	q->params.ecn = true;
@@ -806,7 +795,7 @@ index e69de29..8b2e9fa 100644
 +		}
 +		for (i = 0; i < q->flows_cnt; i++) {
 +			struct fq_pie_flow *flow = q->flows + i;
-+
++            pie_vars_init(&flow->vars);
 +			INIT_LIST_HEAD(&flow->flowchain);
 +		}
 +	}
@@ -873,13 +862,6 @@ index e69de29..8b2e9fa 100644
 +
 +	list_for_each(pos, &q->old_flows)
 +		st.qdisc_stats.old_flows_len++;
-+
-+	st.qdisc_stats.prob = q->vars.prob;
-+	st.qdisc_stats.delay = ((u32) PSCHED_TICKS2NS(q->vars.qdelay)) /
-+				   NSEC_PER_USEC;
-+	st.qdisc_stats.avg_dq_rate = q->vars.avg_dq_rate *
-+				   (PSCHED_TICKS_PER_SEC) >> PIE_SCALE;
-+
 +	return gnet_stats_copy_app(d, &st, sizeof(st));
 +}
 +
@@ -938,6 +920,11 @@ index e69de29..8b2e9fa 100644
 +		xstats.type = TCA_FQ_PIE_XSTATS_CLASS;
 +
 +		xstats.class_stats.deficit = flow->deficit;
++		xstats.class_stats.prob = flow->vars.prob;
++		xstats.class_stats.delay = ((u32) PSCHED_TICKS2NS(flow->vars.qdelay)) /
++			       NSEC_PER_USEC;
++		xstats.class_stats.avg_dq_rate = flow->vars.avg_dq_rate *
++			       (PSCHED_TICKS_PER_SEC) >> PIE_SCALE;
 +		while (skb) {
 +			qs.qlen++;
 +			skb = skb->next;
@@ -1017,7 +1004,7 @@ index e69de29..8b2e9fa 100644
 +MODULE_AUTHOR("Hironori Okano");
 +MODULE_LICENSE("GPL");
 diff --git a/net/sched/sch_pie.c b/net/sched/sch_pie.c
-index b783a44..37e6d66 100644
+index b783a44..7caa2fc 100644
 --- a/net/sched/sch_pie.c
 +++ b/net/sched/sch_pie.c
 @@ -24,49 +24,13 @@
@@ -1072,7 +1059,7 @@ index b783a44..37e6d66 100644
  
  /* private data for the Qdisc */
  struct pie_sched_data {
-@@ -76,64 +40,6 @@ struct pie_sched_data {
+@@ -76,67 +40,10 @@ struct pie_sched_data {
  	struct timer_list adapt_timer;
  };
  
@@ -1137,16 +1124,36 @@ index b783a44..37e6d66 100644
  static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
  {
  	struct pie_sched_data *q = qdisc_priv(sch);
-@@ -144,7 +50,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
++	u32 mtu = psched_mtu(qdisc_dev(sch));
+ 	bool enqueue = false;
+ 
+ 	if (unlikely(qdisc_qlen(sch) >= sch->limit)) {
+@@ -144,7 +51,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
  		goto out;
  	}
  
 -	if (!drop_early(sch, skb->len)) {
-+	if (!drop_early(sch, &q->params, &q->vars, skb->len)) { 
++	if (!drop_early(&q->params, &q->vars, skb->len, mtu)) { 
  		enqueue = true;
  	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
  		   INET_ECN_set_ce(skb)) {
-@@ -241,185 +147,6 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt)
+@@ -158,6 +65,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch)
+ 	/* we can enqueue the packet */
+ 	if (enqueue) {
+ 		q->stats.packets_in++;
++		q->vars.qlen += qdisc_pkt_len(skb);
+ 		if (qdisc_qlen(sch) > q->stats.maxq)
+ 			q->stats.maxq = qdisc_qlen(sch);
+ 
+@@ -231,6 +139,7 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt)
+ 	qlen = sch->q.qlen;
+ 	while (sch->q.qlen > sch->limit) {
+ 		struct sk_buff *skb = __skb_dequeue(&sch->q);
++		q->vars.qlen -= qdisc_pkt_len(skb);
+ 
+ 		qdisc_qstats_backlog_dec(sch, skb);
+ 		qdisc_drop(skb, sch);
+@@ -241,185 +150,6 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt)
  	return 0;
  }
  
@@ -1332,16 +1339,16 @@ index b783a44..37e6d66 100644
  static void pie_timer(unsigned long arg)
  {
  	struct Qdisc *sch = (struct Qdisc *)arg;
-@@ -427,7 +154,7 @@ static void pie_timer(unsigned long arg)
+@@ -427,7 +157,7 @@ static void pie_timer(unsigned long arg)
  	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
  
  	spin_lock(root_lock);
 -	calculate_probability(sch);
-+	calculate_probability(sch, &q->params, &q->vars);
++	calculate_probability(&q->params, &q->vars);
  
  	/* reset the timer to fire after 'tupdate'. tupdate is in jiffies. */
  	if (q->params.tupdate)
-@@ -508,13 +235,14 @@ static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
+@@ -508,13 +238,15 @@ static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
  
  static struct sk_buff *pie_qdisc_dequeue(struct Qdisc *sch)
  {
@@ -1353,7 +1360,8 @@ index b783a44..37e6d66 100644
  		return NULL;
  
 -	pie_process_dequeue(sch, skb);
-+	pie_process_dequeue(sch, &q->vars, skb);
++	q->vars.qlen -= qdisc_pkt_len(skb); //Hironori
++	pie_process_dequeue(&q->vars, skb->len);
  	return skb;
  }
  
