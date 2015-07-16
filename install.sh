@@ -28,7 +28,7 @@ cp ../pkt_sched.h 	include/uapi/linux/pkt_sched.h
 cp ../sch_fq_pie.c 	net/sched/sch_fq_pie.c
 cp ../sch_pie.c 	net/sched/sch_pie.c
 cp ../Kconfig	 	net/sched/Kconfig
-cp ../Makefile 		net/sched/Makefile
+cp ../sched_Makefile 	net/sched/Makefile
 
 git add -N include/net/pie.h
 git add -N net/sched/sch_fq_pie.c
