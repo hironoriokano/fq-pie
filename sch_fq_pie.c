@@ -141,6 +141,9 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	unsigned int idx;
 	struct fq_pie_flow *flow;
 	int uninitialized_var(ret);
+	u32 max_queue_length=0;
+	u32 tmp_prob = 0;
+	int i;
 	bool enqueue = false;
 
 	idx = fq_pie_classify(skb, sch, &ret);
@@ -160,6 +163,14 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	}
 	sch->q.qlen++;
 
+	/* PIE: drop early */
+	tmp_prob = q->vars.prob;
+	for (i = 0; i < q->flows_cnt; i++) {
+		if ( q->backlogs[i] >= max_queue_length ) max_queue_length = q->backlogs[i];
+	}
+	if ( max_queue_length > 0 ) {
+		q->vars.prob = q->vars.prob / max_queue_length * q->backlogs[idx];
+	}
 	if (!drop_early(sch, &q->params, &q->vars, skb->len)) {
 		enqueue = true;
 	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
@@ -170,6 +181,7 @@ static int fq_pie_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		q->stats.ecn_mark++;
 		enqueue = true;
 	}
+	q->vars.prob = tmp_prob;
 
 	/* we can enqueue the packet */
 	if (enqueue) {

@@ -383,10 +383,10 @@ index 690c1689..21574f9 100644
  obj-$(CONFIG_NET_CLS_U32)	+= cls_u32.o
  obj-$(CONFIG_NET_CLS_ROUTE4)	+= cls_route.o
 diff --git a/net/sched/sch_fq_pie.c b/net/sched/sch_fq_pie.c
-index e69de29..b68735e 100644
+index e69de29..8b2e9fa 100644
 --- a/net/sched/sch_fq_pie.c
 +++ b/net/sched/sch_fq_pie.c
-@@ -0,0 +1,617 @@
+@@ -0,0 +1,629 @@
 +/* Copyright (C) 2015 Cisco Systems, Inc, 2015.
 + *
 + * This program is free software; you can redistribute it and/or
@@ -530,6 +530,9 @@ index e69de29..b68735e 100644
 +	unsigned int idx;
 +	struct fq_pie_flow *flow;
 +	int uninitialized_var(ret);
++	u32 max_queue_length=0;
++	u32 tmp_prob = 0;
++	int i;
 +	bool enqueue = false;
 +
 +	idx = fq_pie_classify(skb, sch, &ret);
@@ -549,6 +552,14 @@ index e69de29..b68735e 100644
 +	}
 +	sch->q.qlen++;
 +
++	/* PIE: drop early */
++	tmp_prob = q->vars.prob;
++	for (i = 0; i < q->flows_cnt; i++) {
++		if ( q->backlogs[i] >= max_queue_length ) max_queue_length = q->backlogs[i];
++	}
++	if ( max_queue_length > 0 ) {
++		q->vars.prob = q->vars.prob / max_queue_length * q->backlogs[idx];
++	}
 +	if (!drop_early(sch, &q->params, &q->vars, skb->len)) {
 +		enqueue = true;
 +	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
@@ -559,6 +570,7 @@ index e69de29..b68735e 100644
 +		q->stats.ecn_mark++;
 +		enqueue = true;
 +	}
++	q->vars.prob = tmp_prob;
 +
 +	/* we can enqueue the packet */
 +	if (enqueue) {
