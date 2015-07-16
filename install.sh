@@ -1,10 +1,4 @@
 #!/bin/bash +v
-TEMP=`head -3 linux-next/Makefile`
-VERSION=`echo $TEMP | awk '{print $3}'`
-PATCHLEVEL=`echo $TEMP | awk '{print $6}'`
-SUBLEVEL=`echo $TEMP | awk '{print $9}'`
-SUBLEVEL=`expr $SUBLEVEL + 1`
-PATCH_NAME=patch-${VERSION}.${PATCHLEVEL}.${SUBLEVEL}
 ROOT_PATH=`pwd`
 
 ### install required packages ###
@@ -41,6 +35,12 @@ git add -N net/sched/sch_fq_pie.c
 git status
 
 ### make patch ###
+TEMP=`head -3 Makefile`
+VERSION=`echo $TEMP | awk '{print $3}'`
+PATCHLEVEL=`echo $TEMP | awk '{print $6}'`
+SUBLEVEL=`echo $TEMP | awk '{print $9}'`
+SUBLEVEL=`expr $SUBLEVEL + 1`
+PATCH_NAME=patch-${VERSION}.${PATCHLEVEL}.${SUBLEVEL}
 echo "git diff > ${ROOT_PATH}/${PATCH_NAME}"
 git diff > ${ROOT_PATH}/${PATCH_NAME}
 
