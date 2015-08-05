@@ -5,11 +5,11 @@ ROOT_PATH=`pwd`
 if [ -e /etc/redhat-release ]; then
 	#CentOS6.6 - yum
 	yum groupinstall -y 'development tools'
-	yum install -y vim git wget bc ncurses-devel
+	yum install -y git wget bc ncurses-devel
 elif [ -e /etc/lsb-release ]; then
 	#Ubuntu14.04 - apt-get
 	apt-get install -y git ubuntu-dev-tools build-essential autoconf automake libtool linux-headers-`uname -r` debhelper libdb-dev linux-source kernel-package
-	apt-get install -y vim git wget bc ncurses-dev
+	apt-get install -y wget bc ncurses-dev
 fi
 
 if [ ! -e linux-next ]; then
